@@ -124,6 +124,8 @@ extern "C"
     DEFAULT_ISR(LTDC_IRQHandler);
     DEFAULT_ISR(LTDC_ER_IRQHandler);
     DEFAULT_ISR(DMA2D_IRQHandler);
+    DEFAULT_ISR(QUADSPI_IRQHandler);
+    DEFAULT_ISR(DSI_IRQHandler);
 }
 
 

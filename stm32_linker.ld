@@ -5,6 +5,7 @@ MEMORY
 {
     FLASH (rx) : ORIGIN = 0x08000000, LENGTH = 2M
     SRAM (rxw) : ORIGIN = 0x20000000, LENGTH = 192K
+    SDRAM (rw) : ORIGIN = 0xC0000000, LENGTH = 16M
 }
 
 _sstack = ORIGIN(SRAM) + LENGTH(SRAM);
@@ -17,6 +18,18 @@ SECTIONS
         *(.text*)
         *(.rodata*)
         . = ALIGN(4);
+    } > FLASH
+
+    .ARM.extab :
+    {
+        *(.ARM.extab* .gnu.linkonce.armextab.*)
+    } > FLASH
+
+    .ARM.exidx :
+    {
+        __exidx_start = .;
+        *(.ARM.exidx* .gnu.linkonce.armexidx.*)
+        __exidx_end = .;
     } > FLASH
 
     _ldata = LOADADDR(.data);
@@ -37,4 +50,34 @@ SECTIONS
         . = ALIGN(4);
         _ebss = .;
     } > SRAM
+
+    .heap :
+    {
+        . = ALIGN(4);
+        PROVIDE(end = .);
+        PROVIDE(_end = .);
+        . = ALIGN(4);
+    } > SRAM
+
+    .framebuffer (NOLOAD) :
+    {
+        . = ALIGN(4);
+        _sframebuffer_front = .;
+        KEEP(*(.framebuffer))
+        . = _sframebuffer_front + (800 * 480 * 2);
+        _eframebuffer_front = .;
+        _sframebuffer_back = .;
+        . = _sframebuffer_back + (800 * 480 * 2);
+        _eframebuffer_back = .;
+        _eframebuffer = .;
+    } > SDRAM
+
+    .external_ram (NOLOAD) :
+    {
+        . = ALIGN(4);
+        _sexternal_ram = .;
+        *(.external_ram*)
+        . = ALIGN(4);
+        _eexternal_ram = .;
+    } > SDRAM
 }

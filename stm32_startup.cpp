@@ -115,10 +115,13 @@ const ISR VectorTable[] =
     SAI1_IRQHandler,
     LTDC_IRQHandler,
     LTDC_ER_IRQHandler,
-    DMA2D_IRQHandler
+    DMA2D_IRQHandler,
+    QUADSPI_IRQHandler,
+    DSI_IRQHandler
 };
 
 void _init() {}
+void _fini() {}
 
 void Default_Handler()
 {
@@ -146,4 +149,3 @@ void Reset_Handler()
 
     Default_Handler();
 }
-

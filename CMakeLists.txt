@@ -21,7 +21,15 @@ file(
     "*.cpp"
 )
 
-list(FILTER SOURCES EXCLUDE REGEX "(.*/build/.*|.*/.idea/.*|.*/.git/.*)")
+file(
+    GLOB_RECURSE TEST_SOURCES
+    CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/tests/*.c"
+    "${CMAKE_SOURCE_DIR}/tests/*.cpp"
+)
+
+list(REMOVE_ITEM SOURCES ${TEST_SOURCES})
+list(FILTER SOURCES EXCLUDE REGEX "(.*/build/.*|.*/objects/.*|.*/.idea/.*|.*/.git/.*)")
 
 
 add_executable(
@@ -41,6 +49,9 @@ target_compile_options(
     $<$<COMPILE_LANGUAGE:CXX>:
     -fno-exceptions
     -fno-rtti
+    -fno-use-cxa-atexit
+    -fno-unwind-tables
+    -fno-asynchronous-unwind-tables
     >
 )
 
@@ -77,6 +88,11 @@ file(
     GLOB_RECURSE INCLUDE_DIRS
     LIST_DIRECTORIES true
     ${CMAKE_SOURCE_DIR}/*
+)
+
+list(
+    FILTER INCLUDE_DIRS EXCLUDE REGEX
+    "(.*/build(/.*)?|.*/objects(/.*)?|.*/tests(/.*)?|.*/.idea(/.*)?|.*/.git(/.*)?)"
 )
 
 foreach(dir ${INCLUDE_DIRS})
