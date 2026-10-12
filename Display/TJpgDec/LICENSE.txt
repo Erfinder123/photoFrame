@@ -1,0 +1,12 @@
+TJpgDec - Tiny JPEG Decompressor R0.03
+
+Copyright (C) 2021, ChaN, all right reserved.
+
+The TJpgDec module is free software and there is NO WARRANTY.
+
+There is no restriction on use. You can use, modify and redistribute it for
+personal, non-profit or commercial products UNDER YOUR RESPONSIBILITY.
+
+Redistributions of source code must retain the above copyright notice.
+
+Source: https://elm-chan.org/fsw/tjpgd/

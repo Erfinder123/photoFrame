@@ -8,6 +8,7 @@
 
 static void SDIOGPIOConfig(void);
 static void SDIOClockConfig(void);
+static void RTCClockConfig(void);
 static void SDRAMGPIOConfig(void);
 static void SDRAMConfig(void);
 static void configureFmcPins(GPIO_TypeDef* gpio, uint32_t pins);
@@ -23,10 +24,49 @@ void SystemInit()
     __ISB();
 
     SystemCoreClockConfig();
+    RTCClockConfig();
     SDRAMGPIOConfig();
     SDRAMConfig();
     SDIOGPIOConfig();
     SDIOClockConfig();
+}
+
+static void RTCClockConfig(void)
+{
+    SET_BIT(RCC->APB1ENR, RCC_APB1ENR_PWREN);
+    (void)RCC->APB1ENR;
+    SET_BIT(PWR->CR, PWR_CR_DBP);
+
+    if (READ_BIT(RCC->BDCR, RCC_BDCR_RTCSEL) != RCC_BDCR_RTCSEL_0)
+    {
+        SET_BIT(RCC->BDCR, RCC_BDCR_BDRST);
+        CLEAR_BIT(RCC->BDCR, RCC_BDCR_BDRST);
+    }
+
+    SET_BIT(RCC->BDCR, RCC_BDCR_LSEON);
+    while (READ_BIT(RCC->BDCR, RCC_BDCR_LSERDY) == 0U) {}
+    MODIFY_REG(RCC->BDCR, RCC_BDCR_RTCSEL, RCC_BDCR_RTCSEL_0);
+    SET_BIT(RCC->BDCR, RCC_BDCR_RTCEN);
+
+    const uint32_t rtcWasInitialized = READ_BIT(RTC->ISR, RTC_ISR_INITS);
+    RTC->WPR = 0xCAU;
+    RTC->WPR = 0x53U;
+    SET_BIT(RTC->ISR, RTC_ISR_INIT);
+    while (READ_BIT(RTC->ISR, RTC_ISR_INITF) == 0U) {}
+
+    RTC->PRER = (15UL << RTC_PRER_PREDIV_A_Pos)
+              | (2047UL << RTC_PRER_PREDIV_S_Pos);
+    CLEAR_BIT(RTC->CR, RTC_CR_FMT);
+    if (rtcWasInitialized == 0U)
+    {
+        RTC->TR = 0U;
+        RTC->DR = (1UL << RTC_DR_YU_Pos)
+                | (1UL << RTC_DR_MU_Pos)
+                | (1UL << RTC_DR_WDU_Pos)
+                | (1UL << RTC_DR_DU_Pos);
+    }
+    CLEAR_BIT(RTC->ISR, RTC_ISR_INIT);
+    RTC->WPR = 0xFFU;
 }
 
 static void configureFmcPins(GPIO_TypeDef* gpio, const uint32_t pins)

@@ -185,12 +185,19 @@ bool SystemCard::isReady()
     return implementation_ && implementation_->isReady();
 }
 
+void SystemCard::finishDataExchange()
+{
+    if (implementation_ != nullptr)
+        indicate_.normalOperation();
+}
+
 bool SystemCard::readBlocks(const uint32_t sector, uint8_t* const buffer, const uint32_t count)
 {
     if (!implementation_) return false;
     indicate_.dataExchange();
     const bool ok = implementation_->readBlocks(sector, buffer, count);
-    ok ? indicate_.normalOperation() : indicate_.error();
+    if (!ok)
+        indicate_.error();
     return ok;
 }
 
@@ -199,7 +206,8 @@ bool SystemCard::writeBlocks(const uint32_t sector, const uint8_t* const buffer,
     if (!implementation_) return false;
     indicate_.dataExchange();
     const bool ok = implementation_->writeBlocks(sector, buffer, count);
-    ok ? indicate_.normalOperation() : indicate_.error();
+    if (!ok)
+        indicate_.error();
     return ok;
 }
 

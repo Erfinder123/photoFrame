@@ -13,7 +13,8 @@ enum class TaskDispatcherEvent : uint8_t
     USB_ON,
     USB_OFF,
     DISPLAY_ON,
-    TOUCHSCREEN_ON
+    TOUCHSCREEN_ON,
+    CLOCK_TICK
 };
 
 int main();
@@ -21,6 +22,7 @@ void taskDispatcher(void* parameters);
 void cardInitTask(void* parameters);
 void cardDeinitTask(void* parameters);
 void rootDirectoryTask(void* parameters);
+void clockTask(void* parameters);
 void outputFileName(
     const char* fileName,
     PixelartIcon icon = PixelartIcon::NONE);

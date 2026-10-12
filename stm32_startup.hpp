@@ -15,10 +15,10 @@ extern uint8_t _ebss[];
 
 extern "C"
 {
-	void _init();
+    void _init();
 
     void SystemInit();
-    //void __libc_init_array();
+    void __libc_init_array();
 
     void Default_Handler();
 

@@ -33,7 +33,7 @@ class Indicate
         };
 
         static constexpr uint32_t initializationBlinkInterval = 250U;
-        static constexpr uint32_t exchangeBlinkInterval = 100U;
+        static constexpr uint32_t exchangeBlinkInterval = 750U;
 
         void setNormal(bool enabled);
         void setError(bool enabled);

@@ -4,6 +4,11 @@
 #include "CardLowLevel.hpp"
 #include "Indicate.hpp"
 #include "DisplayLowLevel.hpp"
+#include "ImageLoader.hpp"
+#include "BaseFrame.hpp"
+#include "Layout.hpp"
+#include "TextLayoutCalculator.hpp"
+#include "RtcClock.hpp"
 #include "BitmapFont.hpp"
 #include "NothingFont.hpp"
 #include "MatrixSansFont.hpp"
@@ -29,10 +34,13 @@ namespace
     std::optional<SystemCard> card;
     CardLowLevel cardLowLevel;
     DisplayLowLevel displayLowLevel;
+    ImageLoader imageLoader;
+    BaseFrame baseFrame;
     TaskHandle_t taskDispatcherHandle = nullptr;
     TaskHandle_t cardInitTaskHandle = nullptr;
     TaskHandle_t cardDeinitTaskHandle = nullptr;
     TaskHandle_t rootDirectoryTaskHandle = nullptr;
+    TaskHandle_t clockTaskHandle = nullptr;
     QueueHandle_t taskDispatcherEventQueue = nullptr;
 
     constexpr uint32_t displayWidth = 800U;
@@ -40,11 +48,90 @@ namespace
     constexpr uint32_t displayBytesPerPixel = 2U;
     constexpr uint32_t textScale = 2U;
     constexpr uint32_t textMargin = 8U;
+    constexpr uint16_t clockRequestedHeight = 46U;
+    constexpr ContainerId imageContainerId = 1U;
+    constexpr ContainerId clockContainerId = 2U;
     constexpr uint16_t backgroundColor = 0x0000U;
     constexpr uint16_t textColor = 0xFFFFU;
+    constexpr uint16_t clockShadowColor = 0x0000U;
+
+    enum class DisplayContainerIndex : uint8_t
+    {
+        IMAGE,
+        CLOCK,
+        COUNT
+    };
+
+    Container displayContainers[] =
+    {
+        {
+            .id = imageContainerId,
+            .parentId = rootContainerId,
+            .anchorTargetId = rootContainerId,
+            .name = "image",
+            .type = ContainerType::IMAGE,
+            .size = {displayWidth, displayHeight},
+            .anchor = {
+                HorizontalAnchor::CENTER,
+                VerticalAnchor::CENTER
+            },
+            .offset = {},
+            .priority = 0U,
+            .zIndex = 0U,
+            .order = 0U,
+            .displacement = DisplacementDirection::HORIZONTAL,
+            .visible = true,
+            .calculatedBounds = {},
+            .visibleBounds = {}
+        },
+        {
+            .id = clockContainerId,
+            .parentId = rootContainerId,
+            .anchorTargetId = rootContainerId,
+            .name = "clock",
+            .type = ContainerType::TEXT,
+            .size = {},
+            .anchor = {
+                HorizontalAnchor::RIGHT,
+                VerticalAnchor::TOP
+            },
+            .offset = {
+                static_cast<int32_t>(textMargin),
+                static_cast<int32_t>(textMargin)
+            },
+            .priority = 1U,
+            .zIndex = 1U,
+            .order = 0U,
+            .displacement = DisplacementDirection::HORIZONTAL,
+            .visible = true,
+            .calculatedBounds = {},
+            .visibleBounds = {}
+        }
+    };
+    LayoutCalculator layoutCalculator;
+    const Rect screenBounds{{0, 0}, {displayWidth, displayHeight}};
+
+    Container& getDisplayContainer(const DisplayContainerIndex index)
+    {
+        return displayContainers[static_cast<uint8_t>(index)];
+    }
+
+    bool calculateDisplayLayout()
+    {
+        return layoutCalculator.calculate(
+            displayContainers,
+            static_cast<uint32_t>(DisplayContainerIndex::COUNT),
+            screenBounds);
+    }
 
     uint8_t* textFrameBuffer = nullptr;
     uint32_t textCursorY = textMargin;
+
+    void finishImageRead()
+    {
+        if (card)
+            card->finishDataExchange();
+    }
 
     void setPixel(
         uint8_t* const frameBuffer,
@@ -108,11 +195,15 @@ namespace
         uint8_t* const frameBuffer,
         const BitmapGlyph& glyph,
         const uint8_t* const bitmap,
+        const uint32_t fontHeight,
+        const uint32_t scale,
         const uint32_t originX,
-        const uint32_t originY)
+        const uint32_t originY,
+        const uint16_t color,
+        const Rect& clip)
     {
         const uint32_t bytesPerRow = glyph.width / 8U;
-        for (uint32_t row = 0U; row < MatrixSansFont::height; ++row)
+        for (uint32_t row = 0U; row < fontHeight; ++row)
         {
             for (uint32_t column = 0U; column < glyph.width; ++column)
             {
@@ -120,14 +211,89 @@ namespace
                 if ((bits & (0x80U >> (column % 8U))) == 0U)
                     continue;
 
-                for (uint32_t scaleY = 0U; scaleY < textScale; ++scaleY)
-                    for (uint32_t scaleX = 0U; scaleX < textScale; ++scaleX)
-                        setPixel(
-                            frameBuffer,
-                            originX + column * textScale + scaleX,
-                            originY + row * textScale + scaleY,
-                            textColor);
+                for (uint32_t scaleY = 0U; scaleY < scale; ++scaleY)
+                {
+                    for (uint32_t scaleX = 0U; scaleX < scale; ++scaleX)
+                    {
+                        const uint32_t x = originX + column * scale + scaleX;
+                        const uint32_t y = originY + row * scale + scaleY;
+                        if (x >= static_cast<uint32_t>(clip.position.x)
+                            && y >= static_cast<uint32_t>(clip.position.y)
+                            && x < static_cast<uint32_t>(clip.position.x)
+                                   + clip.size.width
+                            && y < static_cast<uint32_t>(clip.position.y)
+                                   + clip.size.height)
+                            setPixel(frameBuffer, x, y, color);
+                    }
+                }
             }
+        }
+    }
+
+    const BitmapGlyph* findTextGlyph(
+        const char32_t codePoint,
+        const uint8_t*& bitmap)
+    {
+        const BitmapGlyph* glyph = NothingFont::findGlyph(codePoint);
+        bitmap = glyph == nullptr ? nullptr : NothingFont::getBitmap(*glyph);
+        if (glyph == nullptr)
+        {
+            glyph = MatrixSansFont::findGlyph(codePoint);
+            if (glyph != nullptr)
+                bitmap = MatrixSansFont::getBitmap(*glyph);
+        }
+        if (glyph == nullptr)
+        {
+            glyph = BitmapFont::findGlyph(codePoint);
+            if (glyph != nullptr)
+                bitmap = BitmapFont::getBitmap(*glyph);
+        }
+        if (glyph == nullptr)
+        {
+            glyph = BitmapFont::findGlyph(U'?');
+            if (glyph != nullptr)
+                bitmap = BitmapFont::getBitmap(*glyph);
+        }
+        return glyph;
+    }
+
+    void drawClock(
+        uint8_t* const frameBuffer,
+        const Rect& bounds,
+        const char* text,
+        const uint8_t scale)
+    {
+        uint32_t cursorX = static_cast<uint32_t>(bounds.position.x);
+        const uint32_t cursorY = static_cast<uint32_t>(bounds.position.y);
+        while (*text != '\0')
+        {
+            const char32_t codePoint = decodeUtf8(text);
+            const uint8_t* bitmap = nullptr;
+            const BitmapGlyph* const glyph = findTextGlyph(codePoint, bitmap);
+            if (glyph == nullptr)
+                return;
+
+            drawGlyph(
+                frameBuffer,
+                *glyph,
+                bitmap,
+                NothingFont::height,
+                scale,
+                cursorX + 1U,
+                cursorY + 1U,
+                clockShadowColor,
+                bounds);
+            drawGlyph(
+                frameBuffer,
+                *glyph,
+                bitmap,
+                NothingFont::height,
+                scale,
+                cursorX,
+                cursorY,
+                textColor,
+                bounds);
+            cursorX += static_cast<uint32_t>(glyph->width) * scale + scale;
         }
     }
 
@@ -214,6 +380,8 @@ namespace
         if (textFrameBuffer == nullptr)
             return;
 
+        baseFrame.capture(textFrameBuffer);
+        baseFrame.restoreAll(displayLowLevel.getBackBuffer());
         textFrameBuffer = nullptr;
         displayLowLevel.refresh();
     }
@@ -294,6 +462,30 @@ namespace
         }
     }
 
+    const char* getImageStatusText(const ImageDecodeResult result)
+    {
+        switch (result)
+        {
+            case ImageDecodeResult::OK:
+                return "Image: OK";
+            case ImageDecodeResult::FILE_OPEN_FAILED:
+                return "Image: file not found";
+            case ImageDecodeResult::FILE_READ_FAILED:
+                return "Image: read error";
+            case ImageDecodeResult::INVALID_FORMAT:
+                return "Image: invalid file";
+            case ImageDecodeResult::UNSUPPORTED_FORMAT:
+                return "Image: unsupported format";
+            case ImageDecodeResult::INSUFFICIENT_MEMORY:
+                return "Image: not enough memory";
+            case ImageDecodeResult::IMAGE_TOO_LARGE:
+                return "Image: image too large";
+            case ImageDecodeResult::DECOMPRESSION_FAILED:
+            default:
+                return "Image: decode error";
+        }
+    }
+
 }
 
 
@@ -324,6 +516,19 @@ void taskDispatcher(void* parameters)
     cardLowLevel.configureCardDetectInterrupt(
         configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
     displayInitializationSucceeded = displayLowLevel.enable();
+    if (displayInitializationSucceeded)
+    {
+        const BaseType_t clockTaskCreated = xTaskCreate(
+            clockTask,
+            "clock",
+            configMINIMAL_STACK_SIZE,
+            nullptr,
+            0U,
+            &clockTaskHandle);
+        if (clockTaskCreated == pdPASS)
+            RtcClock::configureSecondInterrupt(
+                configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
+    }
 
     TaskDispatcherEvent event = cardLowLevel.isCardDetected()
                               ? TaskDispatcherEvent::CARD_DETECTED
@@ -369,6 +574,10 @@ void taskDispatcher(void* parameters)
                 break;
             case TaskDispatcherEvent::TOUCHSCREEN_ON:
                 // Touchscreen initialization will be added with its driver.
+                break;
+            case TaskDispatcherEvent::CLOCK_TICK:
+                if (clockTaskHandle != nullptr)
+                    xTaskNotifyGive(clockTaskHandle);
                 break;
         }
 
@@ -479,6 +688,41 @@ void rootDirectoryTask(void* parameters)
 {
     static_cast<void>(parameters);
 
+    ImageDecodeResult imageResult = ImageDecodeResult::FILE_OPEN_FAILED;
+    if (fileSystemMountResult == FR_OK && displayInitializationSucceeded)
+    {
+        if (!calculateDisplayLayout())
+            imageResult = ImageDecodeResult::DECOMPRESSION_FAILED;
+
+        const Container& imageContainer = getDisplayContainer(
+            DisplayContainerIndex::IMAGE);
+        uint8_t* const completeFrameBuffer = displayLowLevel.getBackBuffer();
+        const uint32_t imageOffset =
+            (static_cast<uint32_t>(imageContainer.visibleBounds.position.y)
+             * displayWidth
+             + static_cast<uint32_t>(imageContainer.visibleBounds.position.x))
+            * displayBytesPerPixel;
+        uint8_t* const imageFrameBuffer = completeFrameBuffer + imageOffset;
+        if (imageResult != ImageDecodeResult::DECOMPRESSION_FAILED)
+            imageResult = imageLoader.draw(
+                ImageFileType::JPEG,
+                "0:/cat.jpg",
+                imageFrameBuffer,
+                imageContainer.visibleBounds.size.width,
+                imageContainer.visibleBounds.size.height,
+                displayWidth,
+                finishImageRead);
+        if (imageResult == ImageDecodeResult::OK)
+        {
+            baseFrame.capture(completeFrameBuffer);
+            displayLowLevel.swapBuffers();
+            baseFrame.restoreAll(displayLowLevel.getBackBuffer());
+            rootDirectoryTaskHandle = nullptr;
+            vTaskDelete(nullptr);
+            return;
+        }
+    }
+
     if (beginTextFrame())
     {
         if (cardInitError != CardInitError::NONE)
@@ -488,8 +732,8 @@ void rootDirectoryTask(void* parameters)
                     : getSdStatusText(cardInitError));
         if (fileSystemMountResult != FR_OK)
             outputFileName(getFatFsStatusText(fileSystemMountResult));
-        if (fileSystemMountResult == FR_OK)
-            outputFileName("Files:");
+        else
+            outputFileName(getImageStatusText(imageResult));
     }
 
     DIR directory;
@@ -514,6 +758,9 @@ void rootDirectoryTask(void* parameters)
     if (directoryResult == FR_OK)
         directoryResult = card->closeDirectory(directory);
 
+    if (card && directoryResult == FR_OK)
+        card->finishDataExchange();
+
     if (directoryResult != FR_OK
         && directoryResult != fileSystemMountResult)
         outputFileName(getFatFsStatusText(directoryResult));
@@ -527,13 +774,77 @@ void rootDirectoryTask(void* parameters)
     vTaskDelete(nullptr);
 }
 
+void clockTask(void* parameters)
+{
+    static_cast<void>(parameters);
+
+    TextLayoutCalculator textCalculator(
+        NothingFont::height,
+        NothingFont::findGlyph,
+        MatrixSansFont::findGlyph);
+    const TextMeasurement measurement = textCalculator.measure(
+        "00:00",
+        clockRequestedHeight);
+    Container& clockContainer = getDisplayContainer(DisplayContainerIndex::CLOCK);
+    clockContainer.size = measurement.size;
+    static_cast<void>(calculateDisplayLayout());
+
+    Rect previousBounds{};
+    uint8_t previousHour = 0xFFU;
+    uint8_t previousMinute = 0xFFU;
+    uint32_t previousBaseVersion = 0U;
+    while (true)
+    {
+        static_cast<void>(ulTaskNotifyTake(pdTRUE, portMAX_DELAY));
+        if (baseFrame.isValid())
+        {
+            const RtcClock::Time time = RtcClock::readTime();
+            const uint32_t baseVersion = baseFrame.getVersion();
+            if (time.hour != previousHour
+                || time.minute != previousMinute
+                || baseVersion != previousBaseVersion)
+            {
+                char timeText[] =
+                {
+                    static_cast<char>('0' + time.hour / 10U),
+                    static_cast<char>('0' + time.hour % 10U),
+                    ':',
+                    static_cast<char>('0' + time.minute / 10U),
+                    static_cast<char>('0' + time.minute % 10U),
+                    '\0'
+                };
+                const Rect dirtyArea = LayoutCalculator::unite(
+                    previousBounds,
+                    clockContainer.visibleBounds);
+
+                vTaskSuspendAll();
+                uint8_t* const frameBuffer = displayLowLevel.getBackBuffer();
+                baseFrame.restore(frameBuffer, dirtyArea);
+                drawClock(
+                    frameBuffer,
+                    clockContainer.visibleBounds,
+                    timeText,
+                    measurement.scale);
+                displayLowLevel.swapBuffers();
+                static_cast<void>(xTaskResumeAll());
+
+                previousBounds = clockContainer.visibleBounds;
+                previousHour = time.hour;
+                previousMinute = time.minute;
+                previousBaseVersion = baseVersion;
+            }
+        }
+
+    }
+}
+
 void outputFileName(
     const char* fileName,
     const PixelartIcon icon)
 {
     if (fileName == nullptr
         || textFrameBuffer == nullptr
-        || textCursorY + MatrixSansFont::height * textScale > displayHeight)
+        || textCursorY + NothingFont::height * textScale > displayHeight)
         return;
 
     uint32_t cursorX = textMargin;
@@ -541,7 +852,7 @@ void outputFileName(
     {
         constexpr uint32_t iconSpacing = 8U;
         const uint32_t iconY = textCursorY
-                             + (MatrixSansFont::height * textScale
+                             + (NothingFont::height * textScale
                                 - PixelartIcons::height) / 2U;
         drawIcon(textFrameBuffer, icon, cursorX, iconY);
         cursorX += PixelartIcons::width + iconSpacing;
@@ -550,28 +861,8 @@ void outputFileName(
     while (*current != '\0')
     {
         const char32_t codePoint = decodeUtf8(current);
-        const BitmapGlyph* glyph = MatrixSansFont::findGlyph(codePoint);
-        const uint8_t* bitmap = glyph == nullptr
-                              ? nullptr
-                              : MatrixSansFont::getBitmap(*glyph);
-        if (glyph == nullptr)
-        {
-            glyph = NothingFont::findGlyph(codePoint);
-            if (glyph != nullptr)
-                bitmap = NothingFont::getBitmap(*glyph);
-        }
-        if (glyph == nullptr)
-        {
-            glyph = BitmapFont::findGlyph(codePoint);
-            if (glyph != nullptr)
-                bitmap = BitmapFont::getBitmap(*glyph);
-        }
-        if (glyph == nullptr)
-        {
-            glyph = BitmapFont::findGlyph(U'?');
-            if (glyph != nullptr)
-                bitmap = BitmapFont::getBitmap(*glyph);
-        }
+        const uint8_t* bitmap = nullptr;
+        const BitmapGlyph* const glyph = findTextGlyph(codePoint, bitmap);
         if (glyph == nullptr)
             break;
 
@@ -579,10 +870,19 @@ void outputFileName(
         if (cursorX + glyphWidth > displayWidth - textMargin)
             break;
 
-        drawGlyph(textFrameBuffer, *glyph, bitmap, cursorX, textCursorY);
+        drawGlyph(
+            textFrameBuffer,
+            *glyph,
+            bitmap,
+            NothingFont::height,
+            textScale,
+            cursorX,
+            textCursorY,
+            textColor,
+            {{0, 0}, {displayWidth, displayHeight}});
         cursorX += glyphWidth;
     }
-    textCursorY += MatrixSansFont::height * textScale;
+    textCursorY += NothingFont::height * textScale;
 }
 
 extern "C" void EXTI2_IRQHandler()
@@ -596,6 +896,23 @@ extern "C" void EXTI2_IRQHandler()
     const TaskDispatcherEvent event = cardLowLevel.isCardDetected()
                                     ? TaskDispatcherEvent::CARD_DETECTED
                                     : TaskDispatcherEvent::CARD_REMOVED;
+    BaseType_t higherPriorityTaskWoken = pdFALSE;
+    xQueueSendFromISR(
+        taskDispatcherEventQueue,
+        &event,
+        &higherPriorityTaskWoken);
+    portYIELD_FROM_ISR(higherPriorityTaskWoken);
+}
+
+extern "C" void RTC_Alarm_IRQHandler()
+{
+    RtcClock::clearSecondInterrupt();
+
+    if (taskDispatcherHandle == nullptr
+        || taskDispatcherEventQueue == nullptr)
+        return;
+
+    const TaskDispatcherEvent event = TaskDispatcherEvent::CLOCK_TICK;
     BaseType_t higherPriorityTaskWoken = pdFALSE;
     xQueueSendFromISR(
         taskDispatcherEventQueue,

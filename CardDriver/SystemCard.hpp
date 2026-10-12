@@ -52,6 +52,7 @@ class SystemCard
         FRESULT enterDirectory(const char* directoryName);
         FRESULT leaveDirectory();
         [[nodiscard]] bool isReady();
+        void finishDataExchange();
         bool readBlocks(uint32_t firstSector, uint8_t* buffer, uint32_t count);
         bool writeBlocks(uint32_t firstSector, const uint8_t* buffer, uint32_t count);
 

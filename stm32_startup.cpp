@@ -144,7 +144,7 @@ void Reset_Handler()
     }
 
     SystemInit();
-    //__libc_init_array();
+    __libc_init_array();
     main();
 
     Default_Handler();

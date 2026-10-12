@@ -559,7 +559,7 @@ void DisplayLowLevel::swapBuffers()
     backBuffer_ = previousFrontBuffer;
 
     LTDC_Layer1->CFBAR = reinterpret_cast<uint32_t>(frontBuffer_);
-    LTDC->SRCR = LTDC_SRCR_IMR;
+    LTDC->SRCR = LTDC_SRCR_VBR;
     refresh();
 }
 
